@@ -61,6 +61,7 @@ public:
     int ReceiveUdp(Ptr<Packet> p, CustomHeader &ch);
     int ReceiveCnp(Ptr<Packet> p, CustomHeader &ch);
     int ReceiveAck(Ptr<Packet> p, CustomHeader &ch); // handle both ACK and NACK
+    int ReceivePbt(Ptr<Packet> p, CustomHeader &ch); 
     int Receive(Ptr<Packet> p, CustomHeader &ch); // callback function that the QbbNetDevice should use when receive packets. Only NIC can call this function. And do not call this upon PFC
 
     void CheckandSendQCN(Ptr<RdmaRxQueuePair> q);
@@ -150,6 +151,19 @@ public:
     void SetPintSmplThresh(double p);
     void HandleAckHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
     void UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, bool fast_react);
+    
+    /*********************
+     * PBT
+     ********************/
+    uint32_t pbt_mark_interval;
+    uint32_t pbt_mark_offset;
+    uint32_t pbt_min;
+    uint32_t pbt_max;
+    void HandlePbtDcqcn(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
+    void HandlePbtHp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
+    void HandlePbtTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
+	void HandlePbt(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, DataRate *curRate);
+	TracedCallback<Ptr<RdmaQueuePair>, CustomHeader, uint64_t, uint64_t> m_tracePbt; 
 };
 
 } /* namespace ns3 */

@@ -39,6 +39,16 @@ TypeId SwitchNode::GetTypeId (void)
             UintegerValue(9000),
             MakeUintegerAccessor(&SwitchNode::m_maxRtt),
             MakeUintegerChecker<uint32_t>())
+    .AddAttribute("PbtEnabled",
+            "Enable Pbt.",
+            BooleanValue(false),
+            MakeBooleanAccessor(&SwitchNode::m_pbtEnabled),
+            MakeBooleanChecker())
+    .AddAttribute("PfcEnabled",
+            "Enable Pfc.",
+            BooleanValue(true),
+            MakeBooleanAccessor(&SwitchNode::m_pfcEnabled),
+            MakeBooleanChecker())
   ;
   return tid;
 }
@@ -48,15 +58,24 @@ SwitchNode::SwitchNode(){
     m_node_type = 1;
     m_mmu = CreateObject<SwitchMmu>();
     for (uint32_t i = 0; i < pCnt; i++)
-        for (uint32_t j = 0; j < pCnt; j++)
-            for (uint32_t k = 0; k < qCnt; k++)
-                m_bytes[i][j][k] = 0;
-    for (uint32_t i = 0; i < pCnt; i++)
         m_txBytes[i] = 0;
     for (uint32_t i = 0; i < pCnt; i++)
         m_lastPktSize[i] = m_lastPktTs[i] = 0;
     for (uint32_t i = 0; i < pCnt; i++)
         m_u[i] = 0;
+
+    for (uint32_t i = 0; i < pCnt; i++)
+        for (uint32_t j = 0; j < slotTot; j++) 
+            m_rxBytesSlots[i][j] = 0;
+    for (uint32_t i = 0; i < pCnt; i++)
+        for (uint32_t j = 0; j < slotTot; j++) 
+            m_rxMarkedBytesSlots[i][j] = 0;
+    for (uint32_t i = 0; i < pCnt; i++)
+        for (uint32_t j = 0; j < slotTot; j++) 
+            m_queueSizes[i][j] = 0;
+
+    m_currentSlot = 0;
+    m_previousSlot = slotTot - 1;
 }
 
 int SwitchNode::GetOutDev(Ptr<const Packet> p, CustomHeader &ch){
@@ -83,6 +102,8 @@ int SwitchNode::GetOutDev(Ptr<const Packet> p, CustomHeader &ch){
         buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
     else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD)
         buf.u32[2] = ch.ack.sport | ((uint32_t)ch.ack.dport << 16);
+    else if (ch.l3Prot == 0xFB)
+        buf.u32[2] = ch.pbt.sport | ((uint32_t)ch.pbt.dport << 16);
 
     uint32_t idx = EcmpHash(buf.u8, 12, m_ecmpSeed) % nexthops.size();
     return nexthops[idx];
@@ -103,6 +124,85 @@ void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex){
     }
 }
 
+int64_t SwitchNode::GetIntervalBytes(uint32_t interval, uint32_t slot_r, int64_t *byte_slots, uint32_t *last_slot_idx) {
+    int64_t sum = 0;
+
+    sum += byte_slots[m_currentSlot];
+    uint32_t total_segment_num = (interval - slot_r) / (slot_len / accuracy);
+
+    if ((interval - slot_r) % (slot_len / accuracy) != 0) {
+        total_segment_num++;
+    }
+
+    uint32_t full_slot_num = total_segment_num / accuracy;
+    for (uint32_t i = 0; i < full_slot_num; i++) {
+        sum += byte_slots[(m_currentSlot + slotTot - i - 1) % slotTot];
+        total_segment_num -= accuracy;
+    }
+
+    uint32_t last_idx = (m_currentSlot + slotTot - full_slot_num - 1) % slotTot;
+
+    int64_t slot_multiples = (int64_t)total_segment_num * byte_slots[last_idx];
+    sum += slot_multiples / accuracy;
+
+    if (last_slot_idx != NULL) {
+        *last_slot_idx = last_idx;
+    }
+
+    return sum;
+}
+
+void SwitchNode::CheckAndSendPBT(uint32_t inDev, uint32_t outDev, Ptr<Packet> p){
+    CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+    p->PeekHeader(ch);
+    uint8_t tos_val = ch.m_tos;
+    if (tos_val & 0x4) {
+        uint64_t ts = Simulator::Now().GetTimeStep();
+        uint32_t slot_r = ts - m_slotStartTs;
+        int64_t sum_rx_data = 0;
+        uint32_t last_slot_idx;
+
+        int64_t last_slot = GetIntervalBytes(dc_max_rtt / slotN, slot_r, m_rxBytesSlots[outDev], NULL);
+        
+        // add future slots
+        sum_rx_data += w * last_slot;
+
+        // add past slots
+        sum_rx_data += GetIntervalBytes(dc_max_rtt / 2, slot_r, m_rxBytesSlots[outDev], &last_slot_idx);
+
+        uint32_t prior_queue_size = m_queueSizes[outDev][last_slot_idx];
+
+        Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[outDev]);
+        int64_t rxThresh = ((device->GetDataRate()).GetBitRate() * dc_max_rtt * 1e-9)/8;
+        if (sum_rx_data + prior_queue_size > rxThresh) {
+            int64_t recent_rx_data = GetIntervalBytes(marked_win_tx_time, slot_r, m_rxBytesSlots[outDev], NULL);
+            int64_t recent_marked_rx_data = GetIntervalBytes(marked_win_tx_time, slot_r, m_rxMarkedBytesSlots[outDev], NULL);
+            
+            Ptr<QbbNetDevice> in_device = DynamicCast<QbbNetDevice>(m_devices[inDev]);
+            in_device->SendPBT(sum_rx_data, prior_queue_size, recent_rx_data, recent_marked_rx_data, (device->GetDataRate()).GetBitRate(), ch);
+        }
+    }
+}
+
+void SwitchNode::SlotReset() {
+    m_slotStartTs = Simulator::Now().GetTimeStep();
+    m_previousSlot = m_currentSlot;
+    m_currentSlot = (m_currentSlot == slotTot - 1) ? 0 : m_currentSlot + 1; 
+    for (int i = 1; i < GetNDevices(); i++) {
+        m_rxBytesSlots[i][m_currentSlot] = 0;
+        m_rxMarkedBytesSlots[i][m_currentSlot] = 0;
+        Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[i]);
+        uint32_t queueSize = dev->GetQueue()->GetNBytesTotal();
+        m_queueSizes[i][m_currentSlot] = queueSize;
+    }
+
+    slotResetEvent = Simulator::Schedule(NanoSeconds(slot_len), &SwitchNode::SlotReset, this);
+}
+
+void SwitchNode::ScheduleSlotReset(uint64_t startTime) {
+    slotResetEvent = Simulator::Schedule(NanoSeconds(startTime), &SwitchNode::SlotReset, this);
+}
+
 void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
     int idx = GetOutDev(p, ch);
     if (idx >= 0){
@@ -110,7 +210,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 
         // determine the qIndex
         uint32_t qIndex;
-        if (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || (m_ackHighPrio && (ch.l3Prot == 0xFD || ch.l3Prot == 0xFC))){  //QCN or PFC or NACK, go highest priority
+        if (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFB || (m_ackHighPrio && (ch.l3Prot == 0xFD || ch.l3Prot == 0xFC))){  //QCN or PFC or NACK or PBT, go highest priority
             qIndex = 0;
         }else{
             qIndex = (ch.l3Prot == 0x06 ? 1 : ch.udp.pg); // if TCP, put to queue 1
@@ -120,6 +220,45 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
         FlowIdTag t;
         p->PeekPacketTag(t);
         uint32_t inDev = t.GetFlowId();
+
+        // PBT
+
+        uint64_t ingress_ts = Simulator::Now().GetTimeStep();
+        Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[idx]);
+
+        uint32_t transmission_time = 1e9 * (device->GetDataRate()).CalculateTxTime(p->GetSize());
+        
+        uint32_t arrival_data = 0;
+        uint32_t end_data;
+        
+        if (ingress_ts - transmission_time >= m_slotStartTs) {
+            end_data = p->GetSize();
+        } else {
+            uint32_t end_transmission_time = ingress_ts - m_slotStartTs;
+            end_data = end_transmission_time * ((device->GetDataRate()).GetBitRate() / 8) * 1e-9;
+            if (end_data > p->GetSize()) {
+                end_data = p->GetSize();
+			}
+			arrival_data = p->GetSize() - end_data;
+        }
+
+        // updating slots
+        m_rxBytesSlots[idx][m_previousSlot] += arrival_data;
+        m_rxBytesSlots[idx][m_currentSlot] += end_data;
+
+        uint8_t tos_val = ch.m_tos;
+
+        if (tos_val & 0x4) {
+            m_rxMarkedBytesSlots[idx][m_previousSlot] += arrival_data;
+            m_rxMarkedBytesSlots[idx][m_currentSlot] += end_data;
+        }
+
+        if (m_pbtEnabled) { // if PBT enabled
+            CheckAndSendPBT(inDev, idx, p);
+        }
+
+        // END PBT
+
         if (qIndex != 0){ //not highest priority
             if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize()) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize())){           // Admission control
                 m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize());
@@ -127,11 +266,10 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
             }else{
                 return; // Drop
             }
+            if (m_pfcEnabled) {
                 CheckAndSendPfc(inDev, qIndex);
             }
         }
-        m_bytes[inDev][idx][qIndex] += p->GetSize();
-
 
         m_devices[idx]->SwitchSend(qIndex, p, ch);
     }else
@@ -198,11 +336,11 @@ bool SwitchNode::SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> pack
 void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p){
     FlowIdTag t;
     p->PeekPacketTag(t);
+    uint32_t inDev = t.GetFlowId();
+
     if (qIndex != 0){
-        uint32_t inDev = t.GetFlowId();
         m_mmu->RemoveFromIngressAdmission(inDev, qIndex, p->GetSize());
         m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize());
-        m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
         if (m_ecnEnabled){
             bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
             if (egressCongested){
@@ -215,9 +353,11 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
                 p->AddHeader(ppp);
             }
         }
+        if (m_pfcEnabled) {
             //CheckAndSendPfc(inDev, qIndex);
             CheckAndSendResume(inDev, qIndex);
         }
+    }
     if (1){
         uint8_t* buf = p->GetBuffer();
         if (buf[PppHeader::GetStaticSize() + 9] == 0x11){ // udp packet

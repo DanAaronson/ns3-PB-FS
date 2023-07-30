@@ -14,13 +14,30 @@ class Packet;
 class SwitchNode : public Node{
     static const uint32_t pCnt = 257;   // Number of ports used
     static const uint32_t qCnt = 8; // Number of queues/priorities used
+
+public:
+    static const uint32_t slotM = 25; // PBT: Number of register slots
+    static const uint32_t slotN = 16; // PBT: Number of time slots by which we divide the RTT (2N in the paper)
+    static const uint32_t dc_max_rtt = 24960; // PBT: Data Center Max Round Trip Time (nanoseconds)
+    static const uint32_t slot_len = 512; // PBT: length of the register slot (nanoseconds)
+    static const uint32_t accuracy = 32;  // PBT: accuracy constant used to divide register slot into segments
+    static const uint32_t overheadSlotNum = 1; // PBT: extra register slots so that when a packet is handled all slots in the last RTT are correct
+    static const uint32_t slotTot = slotM + overheadSlotNum; // PBT: total number of register slots
+    static const uint32_t w = slotN / 2; // PBT: Number of future time slots to predict
+    static const uint32_t marked_win_tx_time = 1920;
+
+private:
     uint32_t m_ecmpSeed;
     std::unordered_map<uint32_t, std::vector<int> > m_rtTable; // map from ip address (u32) to possible ECMP port (index of dev)
-
-    // monitor of PFC
-    uint32_t m_bytes[pCnt][pCnt][qCnt]; // m_bytes[inDev][outDev][qidx] is the bytes from inDev enqueued for outDev at qidx
     
     uint64_t m_txBytes[pCnt]; // counter of tx bytes
+
+    int64_t m_rxBytesSlots[pCnt][slotTot]; // PBT: counter of rx bytes in the last RTT
+    int64_t m_rxMarkedBytesSlots[pCnt][slotTot]; // PBT: counter of rx marked bytes in the last RTT
+    uint32_t m_queueSizes[pCnt][slotTot]; // PBT: queue size at the start of each slot (in bytes)
+    uint32_t m_currentSlot; // PBT: current register slot number
+    uint32_t m_previousSlot; // PBT: previous register slot number
+    uint64_t m_slotStartTs; // PBT: timestamp for the start of the current register slot
 
     uint32_t m_lastPktSize[pCnt];
     uint64_t m_lastPktTs[pCnt]; // ns
@@ -28,6 +45,8 @@ class SwitchNode : public Node{
 
 protected:
     bool m_ecnEnabled;
+    bool m_pbtEnabled;
+    bool m_pfcEnabled;
     uint32_t m_ccMode;
     uint64_t m_maxRtt;
 
@@ -39,8 +58,12 @@ private:
     static uint32_t EcmpHash(const uint8_t* key, size_t len, uint32_t seed);
     void CheckAndSendPfc(uint32_t inDev, uint32_t qIndex);
     void CheckAndSendResume(uint32_t inDev, uint32_t qIndex);
+    void CheckAndSendPBT(uint32_t inDev, uint32_t outDev, Ptr<Packet> p);
+
+    int64_t GetIntervalBytes(uint32_t interval, uint32_t slot_r, int64_t *byte_slots, uint32_t *last_slot_idx);
 public:
     Ptr<SwitchMmu> m_mmu;
+    EventId slotResetEvent;
 
     static TypeId GetTypeId (void);
     SwitchNode();
@@ -49,6 +72,8 @@ public:
     void ClearTable();
     bool SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> packet, CustomHeader &ch);
     void SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p);
+    void SlotReset(void);
+    void ScheduleSlotReset(uint64_t startTime);
 
     // for approximate calc in PINT
     int logres_shift(int b, int l);

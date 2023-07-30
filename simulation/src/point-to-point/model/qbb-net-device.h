@@ -126,6 +126,7 @@ public:
    void TriggerTransmit(void);
 
 	void SendPfc(uint32_t qIndex, uint32_t type); // type: 0 = pause, 1 = resume
+	void SendPBT(uint32_t rxBytes, uint32_t queueSize, uint32_t recentRxBytes, uint32_t recentMarkedRxBytes, uint64_t linkBw, CustomHeader &orig_ch); // PBT
 
 	TracedCallback<Ptr<const Packet>, uint32_t> m_traceEnqueue;
 	TracedCallback<Ptr<const Packet>, uint32_t> m_traceDequeue;

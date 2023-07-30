@@ -174,9 +174,33 @@ TypeId RdmaHw::GetTypeId (void)
                 UintegerValue(65536),
                 MakeUintegerAccessor(&RdmaHw::pint_smpl_thresh),
                 MakeUintegerChecker<uint32_t>())
+        .AddAttribute("PbtMarkInterval",
+                "The interval between marked PBT packets",
+                UintegerValue(6),
+                MakeUintegerAccessor(&RdmaHw::pbt_mark_interval),
+                MakeUintegerChecker<uint32_t>())
+        .AddAttribute("PbtMarkOffset",
+                "The offset for each interval of the marked PBT packet",
+                UintegerValue(6),
+                MakeUintegerAccessor(&RdmaHw::pbt_mark_offset),
+                MakeUintegerChecker<uint32_t>())
+        .AddAttribute("PbtMin",
+                "The minimum flow size that will be marked for PBT",
+                UintegerValue(25000),
+                MakeUintegerAccessor(&RdmaHw::pbt_min),
+                MakeUintegerChecker<uint32_t>())
+        .AddAttribute("PbtMax",
+                "The maximum flow size that will be marked for PBT",
+                UintegerValue(1073741824),
+                MakeUintegerAccessor(&RdmaHw::pbt_max),
+                MakeUintegerChecker<uint32_t>())
+        .AddTraceSource ("QpPbt", "get a PBT packet.",
+                MakeTraceSourceAccessor (&RdmaHw::m_tracePbt))
         ;
     return tid;
 }
+
+uint64_t RdmaHw::total_rx_good_bytes = 0;
 
 RdmaHw::RdmaHw(){
 }
@@ -240,6 +264,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
     qp->m_rate = m_bps;
     qp->m_max_rate = m_bps;
     if (m_cc_mode == 1){
+        qp->mlx.m_curRate = m_bps;
         qp->mlx.m_targetRate = m_bps;
     }else if (m_cc_mode == 3){
         qp->hp.m_curRate = m_bps;
@@ -370,6 +395,7 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch){
     {
         qp->m_rate = dev->GetDataRate();
         if (m_cc_mode == 1){
+            qp->mlx.m_curRate = dev->GetDataRate();
             qp->mlx.m_targetRate = dev->GetDataRate();
         }else if (m_cc_mode == 3){
             qp->hp.m_curRate = dev->GetDataRate();
@@ -385,6 +411,32 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch){
     }
     return 0;
 }
+
+int RdmaHw::ReceivePbt(Ptr<Packet> p, CustomHeader &ch){
+    uint16_t qIndex = ch.pbt.pg;
+    uint16_t port = ch.pbt.sport;
+    Ptr<RdmaQueuePair> qp = GetQp(ch.sip, port, qIndex);
+    if (qp == NULL){
+        std::cout << "ERROR: " << "node:" << m_node->GetId() << " (PBT) NIC cannot find the flow\n" << std::endl;
+        return 0;
+    } else {
+        // std::cout << "Found node: " << m_node->GetId() << std::endl;
+    }
+    
+    if (m_cc_mode == 1){
+        HandlePbtDcqcn(qp, p, ch);
+    }else if (m_cc_mode == 3){
+        HandlePbtHp(qp, p, ch);
+    }else if (m_cc_mode == 7){
+        HandlePbtTimely(qp, p, ch);
+    }else if (m_cc_mode == 8){
+        // HandlePbtDctcp(qp, p, ch);
+    }else if (m_cc_mode == 10){
+        // HandlePbtHpPint(qp, p, ch);
+    }
+    return 0;
+}
+
 
 int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
     uint16_t qIndex = ch.ack.pg;
@@ -416,6 +468,8 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
     if (ch.l3Prot == 0xFD) // NACK
         RecoverQueue(qp);
 
+    qp->pbt.hasRxAck = true;
+
     // handle cnp
     if (cnp){
         if (m_cc_mode == 1){ // mlx version
@@ -446,6 +500,8 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch){
         ReceiveAck(p, ch);
     }else if (ch.l3Prot == 0xFC){ // ACK
         ReceiveAck(p, ch);
+    }else if (ch.l3Prot == 0xFB){ // PBT
+        ReceivePbt(p, ch);
     }
     return 0;
 }
@@ -546,6 +602,7 @@ void RdmaHw::RedistributeQp(){
 }
 
 Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
+    qp->pbt.m_num_transmitted++; // PBT: count number of packets transmitted
     uint32_t payload_size = qp->GetBytesLeft();
     if (m_mtu < payload_size)
         payload_size = m_mtu;
@@ -567,7 +624,13 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
     ipHeader.SetProtocol (0x11);
     ipHeader.SetPayloadSize (p->GetSize());
     ipHeader.SetTtl (64);
-    ipHeader.SetTos (0);
+    if (qp->m_size > pbt_min && qp->m_size <= pbt_max) { // PBT: checking if the flow's size is in the range for PBT
+        if (qp->pbt.m_num_transmitted % pbt_mark_interval == pbt_mark_offset % pbt_mark_interval && !qp->pbt.hasRxAck && !qp->pbt.hasRxPbt) {
+            ipHeader.SetTos (4); // PBT: setting pbt flag
+        } else {
+            ipHeader.SetTos (0);
+        }
+    }
     ipHeader.SetIdentification (qp->m_ipid);
     p->AddHeader(ipHeader);
     // add ppp header
@@ -647,7 +710,7 @@ void RdmaHw::cnp_received_mlx(Ptr<RdmaQueuePair> q){
         // schedule rate decrease
         ScheduleDecreaseRateMlx(q, 1); // add 1 ns to make sure rate decrease is after alpha update
         // set rate on first CNP
-        q->mlx.m_targetRate = q->m_rate = m_rateOnFirstCNP * q->m_rate;
+        q->mlx.m_targetRate = q->mlx.m_curRate = m_rateOnFirstCNP * q->mlx.m_curRate;
         q->mlx.m_first_cnp = false;
     }
 }
@@ -655,8 +718,9 @@ void RdmaHw::cnp_received_mlx(Ptr<RdmaQueuePair> q){
 void RdmaHw::CheckRateDecreaseMlx(Ptr<RdmaQueuePair> q){
     ScheduleDecreaseRateMlx(q, 0);
     if (q->mlx.m_decrease_cnp_arrived){
+        q->pbt.isCCActiveRate = true;
         #if PRINT_LOG
-        printf("%lu rate dec: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+        printf("%lu rate dec: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
         #endif
         bool clamp = true;
         if (!m_EcnClampTgtRate){
@@ -664,15 +728,16 @@ void RdmaHw::CheckRateDecreaseMlx(Ptr<RdmaQueuePair> q){
                 clamp = false;
         }
         if (clamp)
-            q->mlx.m_targetRate = q->m_rate;
-        q->m_rate = std::max(m_minRate, q->m_rate * (1 - q->mlx.m_alpha / 2));
+            q->mlx.m_targetRate = q->mlx.m_curRate;
+        q->mlx.m_curRate = std::max(m_minRate, q->mlx.m_curRate * (1 - q->mlx.m_alpha / 2));
+        q->m_rate = q->mlx.m_curRate;
         // reset rate increase related things
         q->mlx.m_rpTimeStage = 0;
         q->mlx.m_decrease_cnp_arrived = false;
         Simulator::Cancel(q->mlx.m_rpTimer);
         q->mlx.m_rpTimer = Simulator::Schedule(MicroSeconds(m_rpgTimeReset), &RdmaHw::RateIncEventTimerMlx, this, q);
         #if PRINT_LOG
-        printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+        printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
         #endif
     }
 }
@@ -686,6 +751,7 @@ void RdmaHw::RateIncEventTimerMlx(Ptr<RdmaQueuePair> q){
     q->mlx.m_rpTimeStage++;
 }
 void RdmaHw::RateIncEventMlx(Ptr<RdmaQueuePair> q){
+    q->pbt.isCCActiveRate = true;
     // check which increase phase: fast recovery, active increase, hyper increase
     if (q->mlx.m_rpTimeStage < m_rpgThreshold){ // fast recovery
         FastRecoveryMlx(q);
@@ -698,16 +764,17 @@ void RdmaHw::RateIncEventMlx(Ptr<RdmaQueuePair> q){
 
 void RdmaHw::FastRecoveryMlx(Ptr<RdmaQueuePair> q){
     #if PRINT_LOG
-    printf("%lu fast recovery: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+    printf("%lu fast recovery: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
     #endif
-    q->m_rate = (q->m_rate / 2) + (q->mlx.m_targetRate / 2);
+    q->mlx.m_curRate = (q->mlx.m_curRate / 2) + (q->mlx.m_targetRate / 2);
+    q->m_rate = q->mlx.m_curRate;
     #if PRINT_LOG
-    printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+    printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
     #endif
 }
 void RdmaHw::ActiveIncreaseMlx(Ptr<RdmaQueuePair> q){
     #if PRINT_LOG
-    printf("%lu active inc: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+    printf("%lu active inc: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
     #endif
     // get NIC
     uint32_t nic_idx = GetNicIdxOfQp(q);
@@ -716,14 +783,15 @@ void RdmaHw::ActiveIncreaseMlx(Ptr<RdmaQueuePair> q){
     q->mlx.m_targetRate += m_rai;
     if (q->mlx.m_targetRate > dev->GetDataRate())
         q->mlx.m_targetRate = dev->GetDataRate();
-    q->m_rate = (q->m_rate / 2) + (q->mlx.m_targetRate / 2);
+    q->mlx.m_curRate = (q->mlx.m_curRate / 2) + (q->mlx.m_targetRate / 2);
+    q->m_rate = q->mlx.m_curRate;
     #if PRINT_LOG
-    printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+    printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
     #endif
 }
 void RdmaHw::HyperIncreaseMlx(Ptr<RdmaQueuePair> q){
     #if PRINT_LOG
-    printf("%lu hyper inc: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+    printf("%lu hyper inc: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
     #endif
     // get NIC
     uint32_t nic_idx = GetNicIdxOfQp(q);
@@ -732,9 +800,10 @@ void RdmaHw::HyperIncreaseMlx(Ptr<RdmaQueuePair> q){
     q->mlx.m_targetRate += m_rhai;
     if (q->mlx.m_targetRate > dev->GetDataRate())
         q->mlx.m_targetRate = dev->GetDataRate();
-    q->m_rate = (q->m_rate / 2) + (q->mlx.m_targetRate / 2);
+    q->mlx.m_curRate = (q->mlx.m_curRate / 2) + (q->mlx.m_targetRate / 2);
+    q->m_rate = q->mlx.m_curRate;
     #if PRINT_LOG
-    printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
+    printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->mlx.m_curRate.GetBitRate() * 1e-9);
     #endif
 }
 
@@ -887,8 +956,10 @@ void RdmaHw::UpdateRateHp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch
                 printf("\n");
                 #endif
             }
-            if (updated_any)
+            if (updated_any) {
+                qp->pbt.isCCActiveRate = true;
                 ChangeRate(qp, new_rate);
+            }
             if (!fast_react){
                 if (updated_any){
                     qp->hp.m_curRate = new_rate;
@@ -934,6 +1005,7 @@ void RdmaHw::UpdateRateTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
     uint64_t rtt = Simulator::Now().GetTimeStep() - ch.ack.ih.ts;
     bool print = !us;
     if (qp->tmly.m_lastUpdateSeq != 0){ // not first RTT
+        qp->pbt.isCCActiveRate = true;
         int64_t new_rtt_diff = (int64_t)rtt - (int64_t)qp->tmly.lastRtt;
         double rtt_diff = (1 - m_tmly_alpha) * qp->tmly.rttDiff + m_tmly_alpha * new_rtt_diff;
         double gradient = rtt_diff / m_tmly_minRtt;
@@ -1101,6 +1173,60 @@ void RdmaHw::UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
                                qp->hpccPint.m_lastUpdateSeq = next_seq; //+ rand() % 2 * m_mtu;
                }
        }
+}
+
+/***********************
+ * Pbt
+ ***********************/
+void RdmaHw::HandlePbtDcqcn(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch){
+    HandlePbt(qp, p, ch, &qp->mlx.m_curRate);
+}
+
+void RdmaHw::HandlePbtHp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch){
+    HandlePbt(qp, p, ch, &qp->hp.m_curRate);
+}
+
+void RdmaHw::HandlePbtTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch){
+    HandlePbt(qp, p, ch, &qp->tmly.m_curRate);
+}
+
+void RdmaHw::HandlePbt(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, DataRate *curRate) {
+    qp->pbt.hasRxPbt = true;
+
+    DataRate new_rate;
+    double c = 0;
+    double a = (double)pbt_mark_interval*((double)ch.pbt.recentMarkedRxBytes/(double)ch.pbt.recentRxBytes);
+    a = (a > 1) ? 1 : a;
+    long double I_pbt = std::round(a * (double)ch.pbt.rxBytes);
+    long double I_nonPbt = (ch.pbt.rxBytes > I_pbt) ? ch.pbt.rxBytes - I_pbt : 0;
+    long double BDP = ((long double)ch.pbt.linkBw * 1e-9 * SwitchNode::dc_max_rtt)/8;
+    long double I = std::max(BDP - I_nonPbt - ch.pbt.queueSize, 0.2 * BDP);
+    c = I_pbt / (qp->pbt.mu * I);
+
+    qp->pbt.cs[ch.pbt.switchID] = c;
+
+    if (c < 1) {
+        m_tracePbt(qp, ch, qp->m_rate.GetBitRate(), qp->m_rate.GetBitRate());
+        return;
+    }
+    new_rate = qp->m_max_rate / c;
+    if (new_rate < m_minRate)
+        new_rate = m_minRate;
+    if (new_rate > qp->m_max_rate)
+        new_rate = qp->m_max_rate;
+
+    if (qp->pbt.isCCActiveRate) {
+        m_tracePbt(qp, ch, qp->m_rate.GetBitRate(), qp->m_rate.GetBitRate());
+    } else {
+        if (qp->pbt.cur_c_idx == -1 || qp->pbt.cur_c_idx == ch.pbt.switchID || (qp->pbt.cur_c_idx != ch.pbt.switchID && c > qp->pbt.cs[qp->pbt.cur_c_idx])) {
+            qp->pbt.cur_c_idx = ch.pbt.switchID;
+            m_tracePbt(qp, ch, qp->m_rate.GetBitRate(), new_rate.GetBitRate());
+            ChangeRate(qp, new_rate);
+	        *curRate = new_rate;
+        } else {
+            m_tracePbt(qp, ch, qp->m_rate.GetBitRate(), qp->m_rate.GetBitRate());
+        }
+    }
 }
 
 }

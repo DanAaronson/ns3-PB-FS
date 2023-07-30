@@ -43,13 +43,12 @@ using namespace std;
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
 uint32_t cc_mode = 1;
-bool enable_qcn = true, use_dynamic_pfc_threshold = true, enable_pbt = true, enable_pfc = true;
+bool enable_qcn = true, use_dynamic_pfc_threshold = true;
 uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
 double pause_time = 5, simulator_stop_time = 3.01;
 std::string data_rate, link_delay, topology_file, flow_file, trace_file, trace_output_file;
 std::string fct_output_file = "fct.txt";
 std::string pfc_output_file = "pfc.txt";
-std::string pbt_output_file = "pbt.txt";
 
 double alpha_resume_interval = 55, rp_timer, ewma_gain = 1 / 16;
 double rate_decrease_interval = 4;
@@ -67,10 +66,6 @@ bool multi_rate = true;
 bool sample_feedback = false;
 double pint_log_base = 1.05;
 double pint_prob = 1.0;
-uint32_t pbt_marking_interval = 6;
-uint32_t pbt_marking_offset = 6;
-uint32_t pbt_min = 0;
-uint32_t pbt_max = 1073741824;
 double u_target = 0.95;
 uint32_t int_multi = 1;
 bool rate_bound = true;
@@ -83,7 +78,7 @@ uint32_t enable_trace = 1;
 
 uint32_t buffer_size = 16;
 
-uint32_t qlen_dump_interval = 10000000, qlen_mon_interval = 100;
+uint32_t qlen_dump_interval = 100000000, qlen_mon_interval = 100;
 uint64_t qlen_mon_start = 2000000000, qlen_mon_end = 2100000000;
 string qlen_mon_file;
 
@@ -130,7 +125,6 @@ struct FlowInput{
 };
 FlowInput flow_input = {0};
 uint32_t flow_num;
-uint32_t completed_flow_num = 0;
 
 void ReadFlowInput(){
 	if (flow_input.idx < flow_num){
@@ -179,28 +173,10 @@ void qp_finish(FILE* fout, Ptr<RdmaQueuePair> q){
 	Ptr<Node> dstNode = n.Get(did);
 	Ptr<RdmaDriver> rdma = dstNode->GetObject<RdmaDriver> ();
 	rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->m_pg, q->sport);
-
-	completed_flow_num++;
-	if (completed_flow_num == flow_num) {
-		for (uint32_t i = 0; i < n.GetN(); i++){
-			if (n.Get(i)->GetNodeType() == 1){ // is switch
-				Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
-				Simulator::Cancel(sw->slotResetEvent);
-			}
-		}
-	}
 }
 
 void get_pfc(FILE* fout, Ptr<QbbNetDevice> dev, uint32_t type){
 	fprintf(fout, "%lu %u %u %u %u\n", Simulator::Now().GetTimeStep(), dev->GetNode()->GetId(), dev->GetNode()->GetNodeType(), dev->GetIfIndex(), type);
-}
-
-void get_pbt(FILE* fout, Ptr<RdmaQueuePair> q, CustomHeader ch, uint64_t old_rate, uint64_t new_rate){
-	uint32_t sid = ip_to_node_id(q->sip), did = ip_to_node_id(q->dip);
-	// sip, dip, sport, dport, size (B), start_time, time_from_start (ns), 
-	fprintf(fout, "%u %u %u %u %lu %lu %lu\n", sid, did, q->sport, q->dport, q->m_size, q->startTime.GetTimeStep(), (Simulator::Now() - q->startTime).GetTimeStep());
-	fprintf(fout, "    Postcard: %u %u %u %u %u %lu %.3lf->%.3lf\n", ch.pbt.switchID, ch.pbt.rxBytes, ch.pbt.queueSize, ch.pbt.recentRxBytes, ch.pbt.recentMarkedRxBytes, ch.pbt.linkBw, old_rate*1e-9, new_rate*1e-9);
-	fflush(fout);
 }
 
 struct QlenDistribution{
@@ -229,6 +205,7 @@ void monitor_buffer(FILE* qlen_output, NodeContainer *n){
 		}
 	}
 	if (Simulator::Now().GetTimeStep() % qlen_dump_interval == 0){
+		fprintf(qlen_output, "time: %lu\n", Simulator::Now().GetTimeStep());
 		for (auto &it0 : queue_result)
 			for (auto &it1 : it0.second){
 				fprintf(qlen_output, "%u %u", it0.first, it1.first);
@@ -238,9 +215,6 @@ void monitor_buffer(FILE* qlen_output, NodeContainer *n){
 				fprintf(qlen_output, "\n");
 			}
 		fflush(qlen_output);
-	}
-	if (Simulator::Now().GetTimeStep() % 100000 == 0) {
-		std::cout << Simulator::Now().GetTimeStep() << std::endl;
 	}
 	if (Simulator::Now().GetTimeStep() < qlen_mon_end)
 		Simulator::Schedule(NanoSeconds(qlen_mon_interval), &monitor_buffer, qlen_output, n);
@@ -402,26 +376,6 @@ int main(int argc, char *argv[])
 					std::cout << "USE_DYNAMIC_PFC_THRESHOLD\t" << "Yes" << "\n";
 				else
 					std::cout << "USE_DYNAMIC_PFC_THRESHOLD\t" << "No" << "\n";
-			}
-			else if (key.compare("ENABLE_PBT") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				enable_pbt = v;
-				if (enable_pbt)
-					std::cout << "ENABLE_PBT\t\t\t" << "Yes" << "\n";
-				else
-					std::cout << "ENABLE_PBT\t\t\t" << "No" << "\n";
-			}
-			else if (key.compare("ENABLE_PFC") == 0)
-			{
-				uint32_t v;
-				conf >> v;
-				enable_pfc = v;
-				if (enable_pfc)
-					std::cout << "ENABLE_PFC\t\t\t" << "Yes" << "\n";
-				else
-					std::cout << "ENABLE_PFC\t\t\t" << "No" << "\n";
 			}
 			else if (key.compare("CLAMP_TARGET_RATE") == 0)
 			{
@@ -626,9 +580,6 @@ int main(int argc, char *argv[])
 			}else if (key.compare("PFC_OUTPUT_FILE") == 0){
 				conf >> pfc_output_file;
 				std::cout << "PFC_OUTPUT_FILE\t\t\t\t" << pfc_output_file << '\n';
-			}else if (key.compare("PBT_OUTPUT_FILE") == 0){
-				conf >> pbt_output_file;
-				std::cout << "PBT_OUTPUT_FILE\t\t\t\t" << pbt_output_file << '\n';
 			}else if (key.compare("LINK_DOWN") == 0){
 				conf >> link_down_time >> link_down_A >> link_down_B;
 				std::cout << "LINK_DOWN\t\t\t\t" << link_down_time << ' '<< link_down_A << ' ' << link_down_B << '\n';
@@ -699,18 +650,6 @@ int main(int argc, char *argv[])
 			}else if (key.compare("PINT_PROB") == 0){
 				conf >> pint_prob;
 				std::cout << "PINT_PROB\t\t\t\t" << pint_prob << '\n';
-			}else if (key.compare("PBT_MARKING_INTERVAL") == 0){
-				conf >> pbt_marking_interval;
-				std::cout << "PBT_MARKING_INTERVAL\t\t\t\t" << pbt_marking_interval << '\n';
-			}else if (key.compare("PBT_MARKING_OFFSET") == 0){
-				conf >> pbt_marking_offset;
-				std::cout << "PBT_MARKING_OFFSET\t\t\t\t" << pbt_marking_offset << '\n';
-			}else if (key.compare("PBT_MIN") == 0){
-				conf >> pbt_min;
-				std::cout << "PBT_MIN\t\t\t\t" << pbt_min << '\n';
-			}else if (key.compare("PBT_MAX") == 0){
-				conf >> pbt_max;
-				std::cout << "PBT_MAX\t\t\t\t" << pbt_max << '\n';
 			}
 			fflush(stdout);
 		}
@@ -722,8 +661,6 @@ int main(int argc, char *argv[])
 		fflush(stdout);
 		return 1;
 	}
-	
-	NS_ASSERT_MSG(pbt_marking_interval >= pbt_marking_offset, "marking interval must be large or equal to marking offset");
 
 
 	bool dynamicth = use_dynamic_pfc_threshold;
@@ -777,9 +714,6 @@ int main(int argc, char *argv[])
 			Ptr<SwitchNode> sw = CreateObject<SwitchNode>();
 			n.Add(sw);
 			sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
-			sw->SetAttribute("PbtEnabled", BooleanValue(enable_pbt));
-			sw->SetAttribute("PfcEnabled", BooleanValue(enable_pfc));
-			sw->ScheduleSlotReset(2000000000);
 		}
 	}
 
@@ -917,7 +851,6 @@ int main(int argc, char *argv[])
 
 	#if ENABLE_QP
 	FILE *fct_output = fopen(fct_output_file.c_str(), "w");
-	FILE *pbt_output = fopen(pbt_output_file.c_str(), "w");
 	//
 	// install RDMA driver
 	//
@@ -948,11 +881,6 @@ int main(int argc, char *argv[])
 			rdmaHw->SetAttribute("RateBound", BooleanValue(rate_bound));
 			rdmaHw->SetAttribute("DctcpRateAI", DataRateValue(DataRate(dctcp_rate_ai)));
 			rdmaHw->SetPintSmplThresh(pint_prob);
-			rdmaHw->SetAttribute("PbtMarkInterval", UintegerValue(pbt_marking_interval));
-			rdmaHw->SetAttribute("PbtMarkOffset", UintegerValue(pbt_marking_offset));
-			rdmaHw->SetAttribute("PbtMin", UintegerValue(pbt_min));
-			rdmaHw->SetAttribute("PbtMax", UintegerValue(pbt_max));
-			rdmaHw->TraceConnectWithoutContext("QpPbt", MakeBoundCallback (get_pbt, pbt_output));
 			// create and install RdmaDriver
 			Ptr<RdmaDriver> rdma = CreateObject<RdmaDriver>();
 			Ptr<Node> node = n.Get(i);

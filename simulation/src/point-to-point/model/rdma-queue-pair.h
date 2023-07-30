@@ -35,6 +35,7 @@ public:
      *****************************/
     DataRate m_rate;    //< Current rate
     struct {
+        DataRate m_curRate;
         DataRate m_targetRate;  //< Target rate
         EventId m_eventUpdateAlpha;
         double m_alpha;
@@ -79,6 +80,15 @@ public:
         DataRate m_curRate;
         uint32_t m_incStage;
     }hpccPint;
+    struct{
+        uint32_t m_num_transmitted;
+        bool hasRxAck;
+        bool hasRxPbt;
+        bool isCCActiveRate;
+        double mu;
+        double cs[1000]; // The values of c calculated from each switch
+        int32_t cur_c_idx; // The switchID that we used its value of c 
+    }pbt;
 
     /***********
      * methods

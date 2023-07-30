@@ -131,6 +131,18 @@ public:
           uint32_t qlen;
           uint8_t qIndex;
       } pfc;
+      // PbtHeader
+      struct {
+          uint16_t sport;        //!< Source port
+          uint16_t dport;   //!< Destination port
+          uint16_t pg; // RDMA priority group
+          uint32_t switchID; // Switch IP 
+          uint32_t rxBytes;
+          uint32_t queueSize;
+          uint32_t recentRxBytes;
+          uint32_t recentMarkedRxBytes;
+          uint64_t linkBw;
+      } pbt;
   };
 
   uint8_t GetIpv4EcnBits (void) const;

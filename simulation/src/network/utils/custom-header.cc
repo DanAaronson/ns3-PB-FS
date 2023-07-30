@@ -100,6 +100,8 @@ uint32_t CustomHeader::GetSerializedSize (void) const{
             len += 8;
         else if (l3Prot == 0xFE)
             len += 9;
+        else if (l3Prot == 0xFB)
+            len += 34;
     }
     return len;
 }
@@ -179,6 +181,16 @@ void CustomHeader::Serialize (Buffer::Iterator start) const{
           i.WriteU32 (pfc.time);
           i.WriteU32 (pfc.qlen);
           i.WriteU8 (pfc.qIndex);
+      }else if (l3Prot == 0xFB){ // PBT
+          i.WriteHtonU16 (pbt.sport);
+          i.WriteHtonU16 (pbt.dport);
+		  i.WriteU16(pbt.pg);
+          i.WriteU32 (pbt.switchID);
+          i.WriteU32(pbt.rxBytes);
+          i.WriteU32(pbt.queueSize);
+          i.WriteU32(pbt.recentRxBytes);
+          i.WriteU32(pbt.recentMarkedRxBytes);
+          i.WriteU64(pbt.linkBw);
       }
   }
 }
@@ -318,6 +330,17 @@ CustomHeader::Deserialize (Buffer::Iterator start)
           pfc.qlen = i.ReadU32 ();
           pfc.qIndex = i.ReadU8 ();
           l4Size = 9;
+      } else if (l3Prot == 0xFB){ // PBT
+          pbt.sport = i.ReadNtohU16 ();
+          pbt.dport = i.ReadNtohU16 ();
+		  pbt.pg = i.ReadU16();
+          pbt.switchID = i.ReadU32 ();
+          pbt.rxBytes = i.ReadU32();
+		  pbt.queueSize = i.ReadU32();
+          pbt.recentRxBytes = i.ReadU32();
+          pbt.recentMarkedRxBytes = i.ReadU32();
+          pbt.linkBw = i.ReadU64();
+          l4Size = 34;
       }
   }
 

@@ -29,6 +29,7 @@
 #include "ns3/data-rate.h"
 #include "ns3/object-vector.h"
 #include "ns3/pause-header.h"
+#include "ns3/pbt-header.h"
 #include "ns3/drop-tail-queue.h"
 #include "ns3/assert.h"
 #include "ns3/ipv4.h"
@@ -306,7 +307,7 @@ namespace ns3 {
                 packet->RemoveHeader(h);
                 FlowIdTag t;
                 uint32_t qIndex = m_queue->GetLastQueue();
-                if (qIndex == 0){//this is a pause or cnp, send it immediately!
+                if (qIndex == 0){//this is a pause or cnp or pbt, send it immediately!
                     m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
                     p->RemovePacketTag(t);
                 }else{
@@ -416,6 +417,39 @@ namespace ns3 {
         ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
         ipv4h.SetPayloadSize(p->GetSize());
         ipv4h.SetTtl(1);
+        ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
+        p->AddHeader(ipv4h);
+        AddHeader(p, 0x800);
+        CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+        p->PeekHeader(ch);
+        SwitchSend(0, p, ch);
+    }
+
+    void QbbNetDevice::SendPBT(uint32_t rxBytes, uint32_t queueSize, uint32_t recentRxBytes, uint32_t recentMarkedRxBytes, uint64_t linkBw, CustomHeader &orig_ch){
+        uint16_t sport;
+        uint16_t dport;
+		uint16_t pg = 3;
+        if (orig_ch.l3Prot == 0x6) { // TCP
+            sport = orig_ch.tcp.sport;
+            dport = orig_ch.tcp.dport;
+        } else if (orig_ch.l3Prot == 0x11) { // UDP
+            sport = orig_ch.udp.sport;
+            dport = orig_ch.udp.dport;
+			pg = orig_ch.udp.pg;
+        } else 
+            return;
+        
+
+        uint32_t switchID = m_node->GetId();
+        Ptr<Packet> p = Create<Packet>(0);
+        PbtHeader pbth(rxBytes, queueSize, recentRxBytes, recentMarkedRxBytes, linkBw, switchID, sport, dport, pg);
+        p->AddHeader(pbth);
+        Ipv4Header ipv4h;  // Prepare IPv4 header
+        ipv4h.SetProtocol(0xFB);
+        ipv4h.SetSource(Ipv4Address(orig_ch.dip));
+        ipv4h.SetDestination(Ipv4Address(orig_ch.sip));
+        ipv4h.SetPayloadSize(p->GetSize());
+        ipv4h.SetTtl(255);
         ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
         p->AddHeader(ipv4h);
         AddHeader(p, 0x800);
