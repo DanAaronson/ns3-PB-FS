@@ -66,7 +66,7 @@ ENABLE_TRACE 1 {dump packet-level events or not}
 KMAX_MAP 3 25000000000 400 50000000000 800 100000000000 1600 {a map from link bandwidth to ECN threshold kmax}
 KMIN_MAP 3 25000000000 100 50000000000 200 100000000000 400 {a map from link bandwidth to ECN threshold kmin}
 PMAX_MAP 3 25000000000 0.2 50000000000 0.2 100000000000 0.2 {a map from link bandwidth to ECN threshold pmax}
-BUFFER_SIZE 32 {buffer size per switch}
+BUFFER_SIZE 8 {buffer size per switch}
 QLEN_MON_FILE mix/qlen.txt {output file: result of qlen of each port}
 QLEN_MON_START 2000000000 {start time of dumping qlen}
 QLEN_MON_END 2010000000 {end time of dumping qlen}
