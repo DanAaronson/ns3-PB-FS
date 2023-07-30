@@ -63,9 +63,9 @@ public:
 
   uint32_t brief, headerType, getInt;
   enum HeaderType{
-	L2_Header = 1,
-	L3_Header = 2,
-	L4_Header = 4
+    L2_Header = 1,
+    L3_Header = 2,
+    L4_Header = 4
   };
 
   // ppp header
@@ -89,48 +89,48 @@ public:
   uint16_t m_headerSize; //!< IP header size
 
   union {
-	  struct {
-		  uint16_t sport;        //!< Source port
-		  uint16_t dport;   //!< Destination port
-		  uint32_t seq;  //!< Sequence number
-		  uint32_t ack;       //!< ACK number
-		  uint8_t length;             //!< Length (really a uint4_t) in words.
-		  uint8_t tcpFlags;              //!< Flags (really a uint6_t)
-		  uint16_t windowSize;        //!< Window size
-		  uint16_t urgentPointer;     //!< Urgent pointer
-		  uint8_t optionBuf[32]; // buffer for storing raw options
-	  } tcp;
-	  struct {
-		  uint16_t sport;        //!< Source port
-		  uint16_t dport;   //!< Destination port
-		  uint16_t payload_size;
-		  // SeqTsHeader
-		  uint16_t pg;
-		  uint32_t seq;
-		  IntHeader ih;
-	  } udp;
-	  // CnHeader
-	  struct {
-		  uint16_t fid;
-		  uint8_t qIndex;
-		  uint16_t qfb;
-		  uint8_t ecnBits;
-		  uint16_t total;
-	  } cnp;
-	  // qbbHeader
-	  struct {
-		  uint16_t sport, dport;
-		  uint16_t flags;
-		  uint16_t pg;
-		  uint32_t seq; // the qbb sequence number.
-		  IntHeader ih;
-	  } ack;
-	  // PauseHeader
-	  struct {
-		  uint32_t time;
-		  uint32_t qlen;
-		  uint8_t qIndex;
-	  } pfc;
+      struct {
+          uint16_t sport;        //!< Source port
+          uint16_t dport;   //!< Destination port
+          uint32_t seq;  //!< Sequence number
+          uint32_t ack;       //!< ACK number
+          uint8_t length;             //!< Length (really a uint4_t) in words.
+          uint8_t tcpFlags;              //!< Flags (really a uint6_t)
+          uint16_t windowSize;        //!< Window size
+          uint16_t urgentPointer;     //!< Urgent pointer
+          uint8_t optionBuf[32]; // buffer for storing raw options
+      } tcp;
+      struct {
+          uint16_t sport;        //!< Source port
+          uint16_t dport;   //!< Destination port
+          uint16_t payload_size;
+          // SeqTsHeader
+          uint16_t pg;
+          uint32_t seq;
+          IntHeader ih;
+      } udp;
+      // CnHeader
+      struct {
+          uint16_t fid;
+          uint8_t qIndex;
+          uint16_t qfb;
+          uint8_t ecnBits;
+          uint16_t total;
+      } cnp;
+      // qbbHeader
+      struct {
+          uint16_t sport, dport;
+          uint16_t flags;
+          uint16_t pg;
+          uint32_t seq; // the qbb sequence number.
+          IntHeader ih;
+      } ack;
+      // PauseHeader
+      struct {
+          uint32_t time;
+          uint32_t qlen;
+          uint8_t qIndex;
+      } pfc;
   };
 
   uint8_t GetIpv4EcnBits (void) const;
@@ -143,4 +143,3 @@ public:
 
 
 #endif /* CUSTOM_HEADER_H */
-
