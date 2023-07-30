@@ -43,7 +43,7 @@ using namespace std;
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
 uint32_t cc_mode = 1;
-bool enable_qcn = true, use_dynamic_pfc_threshold = true, enable_pbt = true, enable_pfc = true;
+bool enable_qcn = true, use_dynamic_pfc_threshold = true, enable_pbt = true, enable_pfc = true, enable_irn = false, enable_slow_start = false;
 uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
 uint64_t low_response_timeout = 100000;
 uint64_t high_response_timeout = 240000;
@@ -445,6 +445,26 @@ int main(int argc, char *argv[])
 					std::cout << "ENABLE_PFC\t\t\t" << "Yes" << "\n";
 				else
 					std::cout << "ENABLE_PFC\t\t\t" << "No" << "\n";
+			}
+			else if (key.compare("ENABLE_IRN") == 0)
+			{
+				uint32_t v;
+				conf >> v;
+				enable_irn = v;
+				if (enable_irn)
+					std::cout << "ENABLE_IRN\t\t\t" << "Yes" << "\n";
+				else
+					std::cout << "ENABLE_IRN\t\t\t" << "No" << "\n";
+			}
+			else if (key.compare("ENABLE_SLOW_START") == 0)
+			{
+				uint32_t v;
+				conf >> v;
+				enable_slow_start = v;
+				if (enable_slow_start)
+					std::cout << "ENABLE_SLOW_START\t\t\t" << "Yes" << "\n";
+				else
+					std::cout << "ENABLE_SLOW_START\t\t\t" << "No" << "\n";
 			}
 			else if (key.compare("CLAMP_TARGET_RATE") == 0)
 			{
@@ -1007,8 +1027,9 @@ int main(int argc, char *argv[])
 			rdmaHw->SetAttribute("GputCountEndTime", UintegerValue(gput_count_end_time));
 			rdmaHw->SetAttribute("LossCountEndTime", UintegerValue(loss_count_end_time));
 			rdmaHw->SetAttribute("ResponseTimeout", UintegerValue(low_response_timeout));
-			rdmaHw->SetAttribute("IRNEnabled", BooleanValue(!enable_pfc));
+			rdmaHw->SetAttribute("IRNEnabled", BooleanValue(enable_irn));
 			rdmaHw->TraceConnectWithoutContext("QpPbt", MakeBoundCallback (get_pbt, pbt_output));
+			rdmaHw->SetAttribute("SlowStartEnabled", BooleanValue(enable_slow_start));
 			// create and install RdmaDriver
 			Ptr<RdmaDriver> rdma = CreateObject<RdmaDriver>();
 			Ptr<Node> node = n.Get(i);

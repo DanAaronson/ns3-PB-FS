@@ -287,11 +287,7 @@ namespace ns3 {
                 for (uint32_t i = 0; i < m_rdmaEQ->GetFlowCount(); i++){
                     Ptr<RdmaQueuePair> qp = m_rdmaEQ->GetQp(i);
                     if (qp->GetBytesLeft() == 0 || qp->IsWinBound()) {
-                        if (qp->m_IRNEnabled) {
-                            t = Min(Simulator::GetDelayLeft(qp->TimeoutEvent) + NanoSeconds(1) + Simulator::Now(), t);  
-                        } else {
-                            continue;
-                        }
+                        t = Min(Simulator::GetDelayLeft(qp->TimeoutEvent) + NanoSeconds(1) + Simulator::Now(), t);  
                     } else 
                         t = Min(qp->m_nextAvail, t);
                 }

@@ -78,6 +78,7 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     pbt.cur_c_idx = -1;
     isFirstPacketofTimeout = true;
     m_IRNEnabled = false;
+    m_isInSlowStart = true;
     recoverySeq = 0;
     isInLossRecovery = false;
 }
@@ -200,13 +201,18 @@ void RdmaQueuePair::ScheduleTimeout(uint64_t timeout) {
 }
 
 void RdmaQueuePair::Timeout() {
-    uint64_t win = GetOnTheFly();
-    if (win > 3000) { // 3 packets as specified by the paper
-        TimeoutEvent = Simulator::Schedule(NanoSeconds(timeoutDelay), &RdmaQueuePair::DelayedTimeout, this);
-        isFirstPacketofTimeout = false;
+    if (m_IRNEnabled) {
+        uint64_t win = GetOnTheFly();
+        if (win > 3000) { // 3 packets as specified by the paper
+            TimeoutEvent = Simulator::Schedule(NanoSeconds(timeoutDelay), &RdmaQueuePair::DelayedTimeout, this);
+            isFirstPacketofTimeout = false;
+        } else {
+            snd_rec = snd_una;
+            isInLossRecovery = true;
+            isFirstPacketofTimeout = true;
+        }
     } else {
-        snd_rec = snd_una;
-        isInLossRecovery = true;
+        snd_nxt = snd_una;
         isFirstPacketofTimeout = true;
     }
 }

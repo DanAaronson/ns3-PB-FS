@@ -32,6 +32,7 @@ public:
     uint32_t lastPktSize;
     Callback<void> m_notifyAppFinish;
     bool m_IRNEnabled;
+    bool m_isInSlowStart;
     
     std::bitset<1536> acked;
     uint32_t recoverySeq;

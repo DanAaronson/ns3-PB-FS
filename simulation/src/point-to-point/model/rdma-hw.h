@@ -45,6 +45,7 @@ public:
     bool m_rateBound;
     uint64_t resp_timeout;
     bool m_IRNEnabled;
+    bool m_SlowStartEnabled;
     std::vector<RdmaInterfaceMgr> m_nic; // list of running nic controlled by this RdmaHw
     std::unordered_map<uint64_t, Ptr<RdmaQueuePair> > m_qpMap; // mapping from uint64_t to qp
     std::unordered_map<uint64_t, Ptr<RdmaRxQueuePair> > m_rxQpMap; // mapping from uint64_t to rx qp
@@ -172,6 +173,7 @@ public:
     void HandlePbtDcqcn(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
     void HandlePbtHp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
     void HandlePbtTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
+    void HandlePbtDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
 	void HandlePbt(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, DataRate *curRate);
 	TracedCallback<Ptr<RdmaQueuePair>, CustomHeader, uint64_t, uint64_t> m_tracePbt; 
 };

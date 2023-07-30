@@ -218,6 +218,11 @@ TypeId RdmaHw::GetTypeId (void)
                 MakeBooleanChecker())
         .AddTraceSource ("QpPbt", "get a PBT packet.",
                 MakeTraceSourceAccessor (&RdmaHw::m_tracePbt))
+        .AddAttribute("SlowStartEnabled",
+                "Start flows with TCP slow start.",
+                BooleanValue(false),
+                MakeBooleanAccessor(&RdmaHw::m_SlowStartEnabled),
+                MakeBooleanChecker())
         ;
     return tid;
 }
@@ -285,21 +290,22 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 
     // set init variables
     DataRate m_bps = m_nic[nic_idx].dev->GetDataRate();
-    qp->m_rate = m_bps;
+    DataRate initial_rate = (m_SlowStartEnabled) ? m_minRate : m_bps;
+    qp->m_rate = initial_rate; // This also initializes the rate for DCTCP
     qp->m_max_rate = m_bps;
     if (m_cc_mode == 1){
-        qp->mlx.m_curRate = m_bps;
+        qp->mlx.m_curRate = initial_rate;
         qp->mlx.m_targetRate = m_bps;
     }else if (m_cc_mode == 3){
-        qp->hp.m_curRate = m_bps;
+        qp->hp.m_curRate = initial_rate;
         if (m_multipleRate){
             for (uint32_t i = 0; i < IntHeader::maxHop; i++)
-                qp->hp.hopState[i].Rc = m_bps;
+                qp->hp.hopState[i].Rc = initial_rate;
         }
     }else if (m_cc_mode == 7){
-        qp->tmly.m_curRate = m_bps;
+        qp->tmly.m_curRate = initial_rate;
     }else if (m_cc_mode == 10){
-        qp->hpccPint.m_curRate = m_bps;
+        qp->hpccPint.m_curRate = initial_rate;
     }
 
     // Notify Nic
@@ -484,20 +490,21 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch){
 
     if (qp->m_rate == 0)            //lazy initialization   
     {
-        qp->m_rate = dev->GetDataRate();
+        DataRate initial_rate = (m_SlowStartEnabled) ? m_minRate : dev->GetDataRate();
+        qp->m_rate = initial_rate;
         if (m_cc_mode == 1){
-            qp->mlx.m_curRate = dev->GetDataRate();
+            qp->mlx.m_curRate = initial_rate;
             qp->mlx.m_targetRate = dev->GetDataRate();
         }else if (m_cc_mode == 3){
-            qp->hp.m_curRate = dev->GetDataRate();
+            qp->hp.m_curRate = initial_rate;
             if (m_multipleRate){
                 for (uint32_t i = 0; i < IntHeader::maxHop; i++)
-                    qp->hp.hopState[i].Rc = dev->GetDataRate();
+                    qp->hp.hopState[i].Rc = initial_rate;
             }
         }else if (m_cc_mode == 7){
-            qp->tmly.m_curRate = dev->GetDataRate();
+            qp->tmly.m_curRate = initial_rate;
         }else if (m_cc_mode == 10){
-            qp->hpccPint.m_curRate = dev->GetDataRate();
+            qp->hpccPint.m_curRate = initial_rate;
         }
     }
     return 0;
@@ -521,7 +528,7 @@ int RdmaHw::ReceivePbt(Ptr<Packet> p, CustomHeader &ch){
     }else if (m_cc_mode == 7){
         HandlePbtTimely(qp, p, ch);
     }else if (m_cc_mode == 8){
-        // HandlePbtDctcp(qp, p, ch);
+        HandlePbtDctcp(qp, p, ch);
     }else if (m_cc_mode == 10){
         // HandlePbtHpPint(qp, p, ch);
     }
@@ -549,7 +556,6 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
     else {
         if (!m_backto0){
             if (m_IRNEnabled) {
-                qp->ScheduleTimeout(resp_timeout);
                 if (qp->isInLossRecovery && seq > qp->recoverySeq) {
                     qp->isInLossRecovery = false;
                     qp->recoverySeq = qp->snd_nxt;
@@ -569,12 +575,12 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
                     qp->acked[(end_idx+700) % 1536] = 0;
                 }
             }
+            qp->ScheduleTimeout(resp_timeout);
             qp->Acknowledge(seq);
         }else {
             uint32_t goback_seq = seq / m_chunk * m_chunk;
             qp->Acknowledge(goback_seq);
-            if (m_IRNEnabled) 
-                qp->ScheduleTimeout(resp_timeout);
+            qp->ScheduleTimeout(resp_timeout);
         }
         if (qp->IsFinished()){
             QpComplete(qp);
@@ -722,8 +728,7 @@ void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp){
         Simulator::Cancel(qp->mlx.m_rpTimer);
     }
 
-    if (m_IRNEnabled)
-        Simulator::Cancel(qp->TimeoutEvent);
+    Simulator::Cancel(qp->TimeoutEvent);
 
     // This callback will log info
     // It may also delete the rxQp on the receiver
@@ -834,10 +839,8 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
     }
 
     qp->m_ipid++;
-    if (m_IRNEnabled) {
-        if (qp->isFirstPacketofTimeout) {
-            qp->ScheduleTimeout(resp_timeout);
-        }
+    if (qp->isFirstPacketofTimeout) {
+        qp->ScheduleTimeout(resp_timeout);
     }
 
     if (Simulator::Now().GetTimeStep() <= loss_count_end_time) {
@@ -1307,10 +1310,12 @@ void RdmaHw::HandleAckDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &
 
     // check if need to reduce rate: ECN and not in CWR
     if (cnp && qp->dctcp.m_caState == 0){
+        qp->m_isInSlowStart = false;
         #if PRINT_LOG
         printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "rate", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate()*1e-9);
         #endif
         qp->m_rate = std::max(m_minRate, qp->m_rate * (1 - qp->dctcp.m_alpha / 2));
+        qp->pbt.isCCActiveRate = true;
         #if PRINT_LOG
         printf("%.3lf\n", qp->m_rate.GetBitRate() * 1e-9);
         #endif
@@ -1318,9 +1323,18 @@ void RdmaHw::HandleAckDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &
         qp->dctcp.m_highSeq = qp->snd_nxt;
     }
 
-    // additive inc
-    if (qp->dctcp.m_caState == 0 && new_batch)
-        qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
+    // If we are not in CWR there are two options:
+    // In slow start we increase the rate by the minimum rate for every ACK, which will double the rate each window.
+    // Otherwise, single additive inc for each window
+    if (qp->dctcp.m_caState == 0) {
+        if (m_SlowStartEnabled && qp->m_isInSlowStart) {
+            qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_minRate);
+            qp->pbt.isCCActiveRate = true;
+        } else if (new_batch) {
+            qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
+            qp->pbt.isCCActiveRate = true;
+        }
+    }
 }
 
 /*********************
@@ -1390,6 +1404,10 @@ void RdmaHw::HandlePbtHp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch)
 
 void RdmaHw::HandlePbtTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch){
     HandlePbt(qp, p, ch, &qp->tmly.m_curRate);
+}
+
+void RdmaHw::HandlePbtDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch){
+    HandlePbt(qp, p, ch, &qp->m_rate);
 }
 
 void RdmaHw::HandlePbt(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, DataRate *curRate) {
