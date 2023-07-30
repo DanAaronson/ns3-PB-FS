@@ -1,0 +1,4 @@
+simulation/build
+simulation/.waf-*
+simulation/.lock-waf_linux2_build
+**/*.py[co]
