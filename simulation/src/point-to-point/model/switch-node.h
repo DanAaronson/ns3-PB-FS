@@ -27,6 +27,7 @@ public:
     static const uint32_t marked_win_tx_time = 1920;
 
 private:
+    uint64_t loss_count_end_time;
     uint32_t m_ecmpSeed;
     std::unordered_map<uint32_t, std::vector<int> > m_rtTable; // map from ip address (u32) to possible ECMP port (index of dev)
     
@@ -63,6 +64,7 @@ private:
     int64_t GetIntervalBytes(uint32_t interval, uint32_t slot_r, int64_t *byte_slots, uint32_t *last_slot_idx);
 public:
     Ptr<SwitchMmu> m_mmu;
+    static uint64_t tot_num_drops;
     EventId slotResetEvent;
 
     static TypeId GetTypeId (void);

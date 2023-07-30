@@ -49,9 +49,16 @@ TypeId SwitchNode::GetTypeId (void)
             BooleanValue(true),
             MakeBooleanAccessor(&SwitchNode::m_pfcEnabled),
             MakeBooleanChecker())
+    .AddAttribute("LossCountEndTime",
+            "The time that we stop counting packets dropped for loss calculation (in ns)",
+            UintegerValue(2100000000),
+            MakeUintegerAccessor(&SwitchNode::loss_count_end_time),
+            MakeUintegerChecker<uint64_t>())
   ;
   return tid;
 }
+
+uint64_t SwitchNode::tot_num_drops = 0;
 
 SwitchNode::SwitchNode(){
     m_ecmpSeed = m_id;
@@ -264,6 +271,9 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
                 m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize());
                 m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize());
             }else{
+                if (Simulator::Now().GetTimeStep() <= loss_count_end_time) {
+                    tot_num_drops++;
+                }
                 return; // Drop
             }
             if (m_pfcEnabled) {

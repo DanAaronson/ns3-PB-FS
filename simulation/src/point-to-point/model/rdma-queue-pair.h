@@ -9,6 +9,7 @@
 #include <ns3/custom-header.h>
 #include <ns3/int-header.h>
 #include <vector>
+#include <bitset>
 
 namespace ns3 {
 
@@ -19,6 +20,7 @@ public:
     uint16_t sport, dport;
     uint64_t m_size;
     uint64_t snd_nxt, snd_una; // next seq to send, the highest unacked seq
+    uint64_t snd_rec; // next seq to send for recovery
     uint16_t m_pg;
     uint16_t m_ipid;
     uint32_t m_win; // bound of on-the-fly packets
@@ -29,6 +31,11 @@ public:
     uint32_t wp; // current window of packets
     uint32_t lastPktSize;
     Callback<void> m_notifyAppFinish;
+    bool m_IRNEnabled;
+    
+    std::bitset<1536> acked;
+    uint32_t recoverySeq;
+    bool isInLossRecovery;
 
     /******************************
      * runtime states
@@ -89,6 +96,9 @@ public:
         double cs[1000]; // The values of c calculated from each switch
         int32_t cur_c_idx; // The switchID that we used its value of c 
     }pbt;
+    EventId TimeoutEvent;
+    bool isFirstPacketofTimeout;
+    static uint64_t timeoutDelay;
 
     /***********
      * methods
@@ -99,13 +109,19 @@ public:
     void SetWin(uint32_t win);
     void SetBaseRtt(uint64_t baseRtt);
     void SetVarWin(bool v);
+    void SetIRNEnabled(bool v);
     void SetAppNotifyCallback(Callback<void> notifyAppFinish);
 
+    void ScheduleTimeout(uint64_t timeout);
+    void Timeout(void);
+    void DelayedTimeout(void);
     uint64_t GetBytesLeft();
     uint32_t GetHash(void);
     void Acknowledge(uint64_t ack);
     uint64_t GetOnTheFly();
     bool IsWinBound();
+    bool IsRecoveryBound();
+    bool CanSendRecoveryPacket();
     uint64_t GetWin(); // window size calculated from m_rate
     bool IsFinished();
     uint64_t HpGetCurWin(); // window size calculated from hp.m_curRate, used by HPCC
@@ -126,6 +142,7 @@ public:
     uint16_t sport, dport;
     uint16_t m_ipid;
     uint32_t ReceiverNextExpectedSeq;
+    std::bitset<1024> received;
     Time m_nackTimer;
     int32_t m_milestone_rx;
     uint32_t m_lastNACK;

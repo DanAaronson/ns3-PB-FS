@@ -27,6 +27,12 @@ public:
     static TypeId GetTypeId (void);
     RdmaHw();
 
+    static uint64_t total_rx_good_bytes;
+    static uint64_t total_sent_packets;
+
+    uint64_t gput_count_end_time;
+    uint64_t loss_count_end_time;
+
     Ptr<Node> m_node;
     DataRate m_minRate;     //< Min sending rate
     uint32_t m_mtu;
@@ -37,6 +43,8 @@ public:
     bool m_backto0;
     bool m_var_win, m_fast_react;
     bool m_rateBound;
+    uint64_t resp_timeout;
+    bool m_IRNEnabled;
     std::vector<RdmaInterfaceMgr> m_nic; // list of running nic controlled by this RdmaHw
     std::unordered_map<uint64_t, Ptr<RdmaQueuePair> > m_qpMap; // mapping from uint64_t to qp
     std::unordered_map<uint64_t, Ptr<RdmaRxQueuePair> > m_rxQpMap; // mapping from uint64_t to rx qp
@@ -65,11 +73,13 @@ public:
     int Receive(Ptr<Packet> p, CustomHeader &ch); // callback function that the QbbNetDevice should use when receive packets. Only NIC can call this function. And do not call this upon PFC
 
     void CheckandSendQCN(Ptr<RdmaRxQueuePair> q);
+    int ReceiverCheckSeqSR(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size);
     int ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size);
     void AddHeader (Ptr<Packet> p, uint16_t protocolNumber);
     static uint16_t EtherToPpp (uint16_t protocol);
 
     void RecoverQueue(Ptr<RdmaQueuePair> qp);
+    void RecoverQueueSR(Ptr<RdmaQueuePair> qp, CustomHeader &ch);
     void QpComplete(Ptr<RdmaQueuePair> qp);
     void SetLinkDown(Ptr<QbbNetDevice> dev);
 

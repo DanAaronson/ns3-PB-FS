@@ -125,6 +125,15 @@ public:
           uint32_t seq; // the qbb sequence number.
           IntHeader ih;
       } ack;
+      // IRN nack header
+      struct {
+          uint16_t sport, dport;
+          uint16_t flags;
+          uint16_t pg;
+          uint32_t seq; // the qbb sequence number.
+          uint32_t nackSeq;
+          IntHeader ih;
+      } nack;
       // PauseHeader
       struct {
           uint32_t time;
@@ -147,6 +156,7 @@ public:
 
   uint8_t GetIpv4EcnBits (void) const;
   static uint32_t GetAckSerializedSize(void);
+  static uint32_t GetNackSerializedSize(void);
   static uint32_t GetUdpHeaderSize(void); // include udp, seqTs, INT
   static uint32_t GetStaticWholeHeaderSize(void); // ppp + ip + udp + int
 };

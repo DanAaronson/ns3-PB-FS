@@ -104,7 +104,7 @@ namespace ns3 {
         for (qIndex = 1; qIndex <= fcount; qIndex++){
             uint32_t idx = (qIndex + m_rrlast) % fcount;
             Ptr<RdmaQueuePair> qp = m_qpGrp->Get(idx);
-            if (!paused[qp->m_pg] && qp->GetBytesLeft() > 0 && !qp->IsWinBound()){
+            if (!paused[qp->m_pg] && ((!qp->IsWinBound() && qp->GetBytesLeft() > 0) || !qp->IsRecoveryBound())){
                 if (m_qpGrp->Get(idx)->m_nextAvail.GetTimeStep() > Simulator::Now().GetTimeStep()) //not available now
                     continue;
                 res = idx;
@@ -286,9 +286,14 @@ namespace ns3 {
                 Time t = Simulator::GetMaximumSimulationTime();
                 for (uint32_t i = 0; i < m_rdmaEQ->GetFlowCount(); i++){
                     Ptr<RdmaQueuePair> qp = m_rdmaEQ->GetQp(i);
-                    if (qp->GetBytesLeft() == 0)
-                        continue;
-                    t = Min(qp->m_nextAvail, t);
+                    if (qp->GetBytesLeft() == 0 || qp->IsWinBound()) {
+                        if (qp->m_IRNEnabled) {
+                            t = Min(Simulator::GetDelayLeft(qp->TimeoutEvent) + NanoSeconds(1) + Simulator::Now(), t);  
+                        } else {
+                            continue;
+                        }
+                    } else 
+                        t = Min(qp->m_nextAvail, t);
                 }
                 if (m_nextSend.IsExpired() && t < Simulator::GetMaximumSimulationTime() && t > Simulator::Now()){
                     m_nextSend = Simulator::Schedule(t - Simulator::Now(), &QbbNetDevice::DequeueAndTransmit, this);

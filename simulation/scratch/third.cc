@@ -45,11 +45,17 @@ NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 uint32_t cc_mode = 1;
 bool enable_qcn = true, use_dynamic_pfc_threshold = true, enable_pbt = true, enable_pfc = true;
 uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
+uint64_t low_response_timeout = 100000;
+uint64_t high_response_timeout = 240000;
+uint64_t gput_count_end_time = 2100000000;
+uint64_t loss_count_end_time = 2100000000;
 double pause_time = 5, simulator_stop_time = 3.01;
 std::string data_rate, link_delay, topology_file, flow_file, trace_file, trace_output_file;
 std::string fct_output_file = "fct.txt";
 std::string pfc_output_file = "pfc.txt";
 std::string pbt_output_file = "pbt.txt";
+std::string gput_output_file = "gput.txt";
+std::string loss_output_file = "loss.txt";
 
 double alpha_resume_interval = 55, rp_timer, ewma_gain = 1 / 16;
 double rate_decrease_interval = 4;
@@ -193,6 +199,7 @@ void qp_finish(FILE* fout, Ptr<RdmaQueuePair> q){
 
 void get_pfc(FILE* fout, Ptr<QbbNetDevice> dev, uint32_t type){
 	fprintf(fout, "%lu %u %u %u %u\n", Simulator::Now().GetTimeStep(), dev->GetNode()->GetId(), dev->GetNode()->GetNodeType(), dev->GetIfIndex(), type);
+	fflush(fout);
 }
 
 void get_pbt(FILE* fout, Ptr<RdmaQueuePair> q, CustomHeader ch, uint64_t old_rate, uint64_t new_rate){
@@ -241,9 +248,25 @@ void monitor_buffer(FILE* qlen_output, NodeContainer *n){
 	}
 	if (Simulator::Now().GetTimeStep() % 100000 == 0) {
 		std::cout << Simulator::Now().GetTimeStep() << std::endl;
+		fflush(stdout);
 	}
 	if (Simulator::Now().GetTimeStep() < qlen_mon_end)
 		Simulator::Schedule(NanoSeconds(qlen_mon_interval), &monitor_buffer, qlen_output, n);
+}
+
+void monitor_gput(FILE* gput_output, uint64_t gput_cnt_end_time, uint32_t host_num, uint64_t my_nic_rate) {
+	uint64_t gput_count_time = gput_cnt_end_time - 2000000000;
+	fprintf(gput_output, "Total bytes received successfully is: %lu\n", RdmaHw::total_rx_good_bytes);
+	fprintf(gput_output, "Total bytes ideally transmitted in %lu nanoseconds is: %f\n", gput_count_time, host_num * my_nic_rate * ((gput_count_time * 1e-9) / 8.0));
+	fprintf(gput_output, "Goodput is: %f\n", (double) RdmaHw::total_rx_good_bytes / ((double)(host_num * my_nic_rate * ((gput_count_time * 1e-9) / 8.0))));
+	fflush(gput_output);
+}
+
+void monitor_loss(FILE* loss_output, uint64_t loss_cnt_end_time) {
+	fprintf(loss_output, "Total packets dropped is: %lu\n", SwitchNode::tot_num_drops);
+	fprintf(loss_output, "Total packets sent is: %lu\n", RdmaHw::total_sent_packets);
+	fprintf(loss_output, "Loss at %lu is: %f\n", loss_cnt_end_time, (double) SwitchNode::tot_num_drops / (double) RdmaHw::total_sent_packets);
+	fflush(loss_output);
 }
 
 void CalculateRoute(Ptr<Node> host){
@@ -475,6 +498,20 @@ int main(int argc, char *argv[])
 				l2_ack_interval = v;
 				std::cout << "L2_ACK_INTERVAL\t\t\t" << l2_ack_interval << "\n";
 			}
+			else if (key.compare("LOW_RESP_TIMEOUT") == 0)
+			{
+				uint64_t v;
+				conf >> v;
+				low_response_timeout = v;
+				std::cout << "LOW_RESPONSE_TIMEOUT\t\t\t" << low_response_timeout << "\n";
+			}
+			else if (key.compare("HIGH_RESP_TIMEOUT") == 0)
+			{
+				uint64_t v;
+				conf >> v;
+				high_response_timeout = v;
+				std::cout << "HIGH_RESPONSE_TIMEOUT\t\t\t" << high_response_timeout << "\n";
+			}
 			else if (key.compare("L2_BACK_TO_ZERO") == 0)
 			{
 				uint32_t v;
@@ -629,6 +666,18 @@ int main(int argc, char *argv[])
 			}else if (key.compare("PBT_OUTPUT_FILE") == 0){
 				conf >> pbt_output_file;
 				std::cout << "PBT_OUTPUT_FILE\t\t\t\t" << pbt_output_file << '\n';
+			}else if (key.compare("GPUT_OUTPUT_FILE") == 0){
+				conf >> gput_output_file;
+				std::cout << "GPUT_OUTPUT_FILE\t\t\t\t" << gput_output_file << '\n';
+			}else if (key.compare("LOSS_OUTPUT_FILE") == 0){
+				conf >> loss_output_file;
+				std::cout << "LOSS_OUTPUT_FILE\t\t\t\t" << loss_output_file << '\n';
+			}else if (key.compare("GPUT_COUNT_END_TIME") == 0){
+				conf >> gput_count_end_time;
+				std::cout << "GPUT_COUNT_END_TIME\t\t\t\t" << gput_count_end_time << '\n';
+			}else if (key.compare("LOSS_COUNT_END_TIME") == 0){
+				conf >> loss_count_end_time;
+				std::cout << "LOSS_COUNT_END_TIME\t\t\t\t" << loss_count_end_time << '\n';
 			}else if (key.compare("LINK_DOWN") == 0){
 				conf >> link_down_time >> link_down_A >> link_down_B;
 				std::cout << "LINK_DOWN\t\t\t\t" << link_down_time << ' '<< link_down_A << ' ' << link_down_B << '\n';
@@ -779,6 +828,7 @@ int main(int argc, char *argv[])
 			sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
 			sw->SetAttribute("PbtEnabled", BooleanValue(enable_pbt));
 			sw->SetAttribute("PfcEnabled", BooleanValue(enable_pfc));
+			sw->SetAttribute("LossCountEndTime", UintegerValue(loss_count_end_time));
 			sw->ScheduleSlotReset(2000000000);
 		}
 	}
@@ -918,6 +968,8 @@ int main(int argc, char *argv[])
 	#if ENABLE_QP
 	FILE *fct_output = fopen(fct_output_file.c_str(), "w");
 	FILE *pbt_output = fopen(pbt_output_file.c_str(), "w");
+	NS_ASSERT_MSG(high_response_timeout >= low_response_timeout, "high response timeout must be greater than low response timeout");
+	RdmaQueuePair::timeoutDelay = high_response_timeout - low_response_timeout;
 	//
 	// install RDMA driver
 	//
@@ -952,6 +1004,10 @@ int main(int argc, char *argv[])
 			rdmaHw->SetAttribute("PbtMarkOffset", UintegerValue(pbt_marking_offset));
 			rdmaHw->SetAttribute("PbtMin", UintegerValue(pbt_min));
 			rdmaHw->SetAttribute("PbtMax", UintegerValue(pbt_max));
+			rdmaHw->SetAttribute("GputCountEndTime", UintegerValue(gput_count_end_time));
+			rdmaHw->SetAttribute("LossCountEndTime", UintegerValue(loss_count_end_time));
+			rdmaHw->SetAttribute("ResponseTimeout", UintegerValue(low_response_timeout));
+			rdmaHw->SetAttribute("IRNEnabled", BooleanValue(!enable_pfc));
 			rdmaHw->TraceConnectWithoutContext("QpPbt", MakeBoundCallback (get_pbt, pbt_output));
 			// create and install RdmaDriver
 			Ptr<RdmaDriver> rdma = CreateObject<RdmaDriver>();
@@ -1079,6 +1135,22 @@ int main(int argc, char *argv[])
 	FILE* qlen_output = fopen(qlen_mon_file.c_str(), "w");
 	Simulator::Schedule(NanoSeconds(qlen_mon_start), &monitor_buffer, qlen_output, &n);
 
+    // schedule gput monitor
+	FILE *gput_output = fopen(gput_output_file.c_str(), "w");
+	uint64_t gput_diff_time = gput_count_end_time - 2000000000;
+	Simulator::Schedule(NanoSeconds(gput_diff_time/4 + 2000000001), &monitor_gput, gput_output, gput_diff_time/4 + 2000000000, node_num - switch_num, nic_rate);
+	Simulator::Schedule(NanoSeconds(gput_diff_time/2 + 2000000001), &monitor_gput, gput_output, gput_diff_time/2 + 2000000000, node_num - switch_num, nic_rate);
+	Simulator::Schedule(NanoSeconds((gput_diff_time/4)*3 + 2000000001), &monitor_gput, gput_output, (gput_diff_time/4)*3 + 2000000000, node_num - switch_num, nic_rate);
+	Simulator::Schedule(NanoSeconds(gput_count_end_time + 1), &monitor_gput, gput_output, gput_count_end_time, node_num - switch_num, nic_rate);
+	
+    // schedule loss monitor
+	FILE *loss_output = fopen(loss_output_file.c_str(), "w");
+	uint64_t loss_diff_time = loss_count_end_time - 2000000000;
+	Simulator::Schedule(NanoSeconds(loss_diff_time/4 + 2000000001), &monitor_loss, loss_output, loss_diff_time/4 + 2000000000);
+	Simulator::Schedule(NanoSeconds(loss_diff_time/2 + 2000000001), &monitor_loss, loss_output, loss_diff_time/2 + 2000000000);
+	Simulator::Schedule(NanoSeconds((loss_diff_time/4)*3 + 2000000001), &monitor_loss, loss_output, (loss_diff_time/4)*3 + 2000000000);
+	Simulator::Schedule(NanoSeconds(loss_count_end_time + 1), &monitor_loss, loss_output, loss_count_end_time);
+
 	//
 	// Now, do the actual simulation.
 	//
@@ -1093,5 +1165,5 @@ int main(int argc, char *argv[])
 
 	endt = clock();
 	std::cout << (double)(endt - begint) / CLOCKS_PER_SEC << "\n";
-
+	fflush(stdout);
 }

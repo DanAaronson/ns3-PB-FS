@@ -96,6 +96,8 @@ uint32_t CustomHeader::GetSerializedSize (void) const{
             len += GetUdpHeaderSize();
         else if (l3Prot == 0xFC || l3Prot == 0xFD)
             len += GetAckSerializedSize();
+        else if (l3Prot == 0xFA)
+            len += GetNackSerializedSize();
         else if (l3Prot == 0xFF)
             len += 8;
         else if (l3Prot == 0xFE)
@@ -176,6 +178,14 @@ void CustomHeader::Serialize (Buffer::Iterator start) const{
           i.WriteU16(ack.flags);
           i.WriteU16(ack.pg);
           i.WriteU32(ack.seq);
+          udp.ih.Serialize(i);
+      }else if (l3Prot == 0xFA){ // IRN NACK
+          i.WriteU16(nack.sport);
+          i.WriteU16(nack.dport);
+          i.WriteU16(nack.flags);
+          i.WriteU16(nack.pg);
+          i.WriteU32(nack.seq);
+          i.WriteU32(nack.nackSeq);
           udp.ih.Serialize(i);
       }else if (l3Prot == 0xFE){ // PFC
           i.WriteU32 (pfc.time);
@@ -325,6 +335,16 @@ CustomHeader::Deserialize (Buffer::Iterator start)
           if (getInt)
               ack.ih.Deserialize(i);
           l4Size = GetAckSerializedSize();
+      }else if (l3Prot == 0xFA){ // IRN NACK
+          nack.sport = i.ReadU16();
+          nack.dport = i.ReadU16();
+          nack.flags = i.ReadU16();
+          nack.pg = i.ReadU16();
+          nack.seq = i.ReadU32();
+          nack.nackSeq = i.ReadU32();
+          if (getInt)
+              nack.ih.Deserialize(i);
+          l4Size = GetNackSerializedSize();
       }else if (l3Prot == 0xFE){ // PFC
           pfc.time = i.ReadU32 ();
           pfc.qlen = i.ReadU32 ();
@@ -353,6 +373,10 @@ uint8_t CustomHeader::GetIpv4EcnBits (void) const{
 
 uint32_t CustomHeader::GetAckSerializedSize(void){
     return sizeof(ack.sport) + sizeof(ack.dport) + sizeof(ack.flags) + sizeof(ack.pg) + sizeof(ack.seq) + IntHeader::GetStaticSize();
+}
+
+uint32_t CustomHeader::GetNackSerializedSize(void){
+    return sizeof(nack.sport) + sizeof(nack.dport) + sizeof(nack.flags) + sizeof(nack.pg) + sizeof(nack.seq) + sizeof(nack.nackSeq) + IntHeader::GetStaticSize();
 }
 
 uint32_t CustomHeader::GetUdpHeaderSize(void){

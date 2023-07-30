@@ -20,6 +20,8 @@ TypeId RdmaQueuePair::GetTypeId (void)
     return tid;
 }
 
+uint64_t RdmaQueuePair::timeoutDelay = 0;
+
 RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, uint16_t _sport, uint16_t _dport){
     startTime = Simulator::Now();
     sip = _sip;
@@ -28,6 +30,7 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     dport = _dport;
     m_size = 0;
     snd_nxt = snd_una = 0;
+    snd_rec = 0;
     m_pg = pg;
     m_ipid = 0;
     m_win = 0;
@@ -73,6 +76,10 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
     pbt.isCCActiveRate = false;
     pbt.mu = 0.95;
     pbt.cur_c_idx = -1;
+    isFirstPacketofTimeout = true;
+    m_IRNEnabled = false;
+    recoverySeq = 0;
+    isInLossRecovery = false;
 }
 
 void RdmaQueuePair::SetSize(uint64_t size){
@@ -89,6 +96,10 @@ void RdmaQueuePair::SetBaseRtt(uint64_t baseRtt){
 
 void RdmaQueuePair::SetVarWin(bool v){
     m_var_win = v;
+}
+
+void RdmaQueuePair::SetIRNEnabled(bool v){
+    m_IRNEnabled = v;
 }
 
 void RdmaQueuePair::SetAppNotifyCallback(Callback<void> notifyAppFinish){
@@ -118,6 +129,9 @@ void RdmaQueuePair::Acknowledge(uint64_t ack){
     if (ack > snd_una){
         snd_una = ack;
     }
+    if (ack > snd_rec) {
+        snd_rec = ack;
+    }
 }
 
 uint64_t RdmaQueuePair::GetOnTheFly(){
@@ -127,6 +141,22 @@ uint64_t RdmaQueuePair::GetOnTheFly(){
 bool RdmaQueuePair::IsWinBound(){
     uint64_t w = GetWin();
     return w != 0 && GetOnTheFly() >= w;
+}
+
+bool RdmaQueuePair::IsRecoveryBound(){
+    return !(isInLossRecovery && CanSendRecoveryPacket());
+}
+
+bool RdmaQueuePair::CanSendRecoveryPacket() {
+    if (snd_rec == snd_una) 
+        return true;
+    uint32_t idx = (snd_rec/1000) % 1536; 
+    for (int i = 1; i < 350; i++) {
+        if (acked[(idx + i) % 1536]) {
+            return true;
+        }
+    }
+    return false;
 }
 
 uint64_t RdmaQueuePair::GetWin(){
@@ -159,6 +189,32 @@ uint64_t RdmaQueuePair::HpGetCurWin(){
 
 bool RdmaQueuePair::IsFinished(){
     return snd_una >= m_size;
+}
+
+void RdmaQueuePair::ScheduleTimeout(uint64_t timeout) {
+    if (!isFirstPacketofTimeout) {
+        Simulator::Cancel(TimeoutEvent);
+    }
+    TimeoutEvent = Simulator::Schedule(NanoSeconds(timeout), &RdmaQueuePair::Timeout, this);
+    isFirstPacketofTimeout = false;
+}
+
+void RdmaQueuePair::Timeout() {
+    uint64_t win = GetOnTheFly();
+    if (win > 3000) { // 3 packets as specified by the paper
+        TimeoutEvent = Simulator::Schedule(NanoSeconds(timeoutDelay), &RdmaQueuePair::DelayedTimeout, this);
+        isFirstPacketofTimeout = false;
+    } else {
+        snd_rec = snd_una;
+        isInLossRecovery = true;
+        isFirstPacketofTimeout = true;
+    }
+}
+
+void RdmaQueuePair::DelayedTimeout() {
+    snd_rec = snd_una;
+    isInLossRecovery = true;
+    isFirstPacketofTimeout = true;
 }
 
 /*********************

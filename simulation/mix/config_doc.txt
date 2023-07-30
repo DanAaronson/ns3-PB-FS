@@ -12,7 +12,11 @@ TRACE_OUTPUT_FILE mix/mix.tr {output file: packet-level events (enqu, dequ, pfc,
 FCT_OUTPUT_FILE mix/fct.txt {output file: flow completion time of different flows}
 PFC_OUTPUT_FILE mix/pfc.txt {output file: result of PFC}
 PBT_OUTPUT_FILE mix/pbt.txt {output file: result of PBT}
+GPUT_OUTPUT_FILE mix/gput.txt {output file: the resulting goodput of the simulation}
+LOSS_OUTPUT_FILE mix/loss.txt {output file: the resulting loss of the simulation}
 
+GPUT_COUNT_END_TIME 2100000000 {stop time for counting received packets for goodput calculation}
+LOSS_COUNT_END_TIME 2100000000 {stop time for counting send and dropped packets for loss calculation}
 SIMULATOR_STOP_TIME 4.00 {simulation stop time}
 
 CC_MODE 3 {Specifying different CC. 1: DCQCN, 3: HPCC, 7: TIMELY, 8: DCTCP, 10: HPCC-PINT}
@@ -31,6 +35,8 @@ ERROR_RATE_PER_LINK 0.0000 {Error rate of each link}
 L2_CHUNK_SIZE 4000 {for DCQCN: chunk size}
 L2_ACK_INTERVAL 1 {number of packets between ACK generation, 1 means per packet}
 L2_BACK_TO_ZERO 0 {0: go-back-0, 1: go-back-N}
+LOW_RESP_TIMEOUT 100000 {for IRN: low value of RDMA timeout for receiving feedback from receiver (in ns)}
+HIGH_RESP_TIMEOUT 3000000 {for IRN: high value of RDMA timeout for receiving feedback from receiver (in ns)}
 
 HAS_WIN 1 {0: no window, 1: has a window}
 GLOBAL_T 1 {0: different server pairs use their own RTT as T, 1: use the max base RTT as the global T}
