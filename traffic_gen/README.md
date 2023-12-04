@@ -10,10 +10,14 @@ Example:
 
 The generate traffic can be directly used by the simulation.
 
+## Incast Traffic
+
+The `incast_gen.py` script can be used to add incast traffic to the traffic file created by `traffic_gen.py`. `python incast_gen.py -h` for help.
+
 ## Traffic format
 The first line is the number of flows.
 
 Each line after that is a flow: `<source host> <dest host> 3 <dest port number> <flow size (bytes)> <start time (seconds)>`
 
 ## Flow size distributions
-We provide 4 distributions. `WebSearch_distribution.txt` and `FbHdp_distribution.txt` are the ones used in the HPCC paper. `AliStorage2019.txt` are collected from Alibaba's production distributed storage system in 2019. `GoogleRPC2008.txt` are Google's RPC size distribution before 2008.
+`IRN_distribution.txt` is the distribution used for evaluating PB-FS. It is based on the IRN paper.
